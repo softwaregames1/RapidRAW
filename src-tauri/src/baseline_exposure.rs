@@ -34,16 +34,18 @@ pub struct RawExposure {
 
 impl RawExposure {
     pub fn compensation(&self, options: BaselineOptions) -> f32 {
-        let baseline = options.baseline_exposure.map_or(0.0, |amount| {
-            let scene_referred = if self.scene_referred { amount } else { 0.0 };
-            scene_referred + self.dng_baseline
-        });
+        // the DNG tag is part of the file's rendering, not a preference: phone DNGs
+        // store dark data and rely on it (Samsung writes +3 EV), so it always applies
+        let amount = match options.baseline_exposure {
+            Some(amount) if self.scene_referred => amount,
+            _ => 0.0,
+        };
         let highlight_preservation = if options.compensate_highlight_preservation {
             self.highlight_preservation
         } else {
             0.0
         };
-        baseline + highlight_preservation
+        self.dng_baseline + amount + highlight_preservation
     }
 }
 
@@ -239,5 +241,59 @@ fn pentax(makernote: &IFD) -> f32 {
     {
         Some(Value::Undefined(data)) if data.first() == Some(&1) => 1.0,
         _ => 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(amount: Option<f32>, highlights: bool) -> BaselineOptions {
+        BaselineOptions {
+            baseline_exposure: amount,
+            compensate_highlight_preservation: highlights,
+        }
+    }
+
+    #[test]
+    fn dng_baseline_applies_with_the_setting_off() {
+        let exposure = RawExposure {
+            scene_referred: true,
+            dng_baseline: 3.0,
+            highlight_preservation: 0.0,
+        };
+        assert_eq!(exposure.compensation(options(None, false)), 3.0);
+    }
+
+    #[test]
+    fn setting_adds_its_amount_to_the_dng_baseline() {
+        let exposure = RawExposure {
+            scene_referred: true,
+            dng_baseline: 3.0,
+            highlight_preservation: 1.0,
+        };
+        assert_eq!(exposure.compensation(options(Some(0.7), false)), 3.7);
+        assert_eq!(exposure.compensation(options(Some(0.7), true)), 4.7);
+    }
+
+    #[test]
+    fn monochrome_gets_the_dng_baseline_but_not_the_amount() {
+        let exposure = RawExposure {
+            scene_referred: false,
+            dng_baseline: -0.5,
+            highlight_preservation: 0.0,
+        };
+        assert_eq!(exposure.compensation(options(Some(0.7), false)), -0.5);
+    }
+
+    #[test]
+    fn files_without_the_tag_are_unchanged() {
+        let exposure = RawExposure {
+            scene_referred: true,
+            dng_baseline: 0.0,
+            highlight_preservation: 0.0,
+        };
+        assert_eq!(exposure.compensation(options(None, false)), 0.0);
+        assert_eq!(exposure.compensation(options(Some(0.7), false)), 0.7);
     }
 }
